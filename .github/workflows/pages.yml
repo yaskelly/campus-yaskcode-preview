@@ -1,0 +1,71 @@
+name: Campus Preview
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: campus-preview-pages
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout experimental source
+        uses: actions/checkout@v4
+        with:
+          repository: yaskelly/yaskelly.github.io
+          ref: experiment/campus-loading-flip-cards
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Configure isolated preview paths
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('astro.config.mjs')
+          s = p.read_text()
+          s = s.replace("output: 'static',", "output: 'static',\n  site: 'https://yaskelly.github.io',\n  base: '/campus-yaskcode-preview/',")
+          p.write_text(s)
+          PY
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build
+      - name: Adapt and verify preview resources
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from html.parser import HTMLParser
+          prefix = '/campus-yaskcode-preview/'
+          class Resources(HTMLParser):
+              def handle_starttag(self, tag, attrs):
+                  d = dict(attrs)
+                  url = d.get('src') if tag in ('img', 'script') else d.get('href') if tag == 'link' else None
+                  if url and url.startswith('/'):
+                      assert url.startswith(prefix), f'Unscoped resource: {url}'
+                      file = Path('dist') / url[len(prefix):].split('?')[0].split('#')[0]
+                      assert file.is_file(), f'Missing resource: {file}'
+          for p in Path('dist').rglob('*.html'):
+              s = p.read_text()
+              s = s.replace('/images/', prefix + 'images/')
+              s = s.replace('</head>', '<meta name="robots" content="noindex,nofollow"></head>')
+              p.write_text(s)
+              Resources().feed(s)
+          print('Preview paths and local resources verified.')
+          PY
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy isolated preview
+        id: deployment
+        uses: actions/deploy-pages@v4
